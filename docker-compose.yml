@@ -1,0 +1,96 @@
+name: ragraph-demo
+
+services:
+  db:
+    image: pgvector/pgvector:pg18
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      # PG18 images keep data in a versioned subdirectory of /var/lib/postgresql
+      - db-data:/var/lib/postgresql
+      - ./db/init.sql:/docker-entrypoint-initdb.d/01-vector.sql:ro
+    mem_limit: 300m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  neo4j:
+    # Official Community Edition (GPLv3), LTS line 5.26. Pinned tag verified on Docker Hub.
+    image: neo4j:5.26.32-community
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD}
+      NEO4J_server_memory_heap_initial__size: 256m
+      NEO4J_server_memory_heap_max__size: 512m
+      NEO4J_server_memory_pagecache_size: 128m
+      NEO4J_server_jvm_additional: -XX:+ExitOnOutOfMemoryError
+      NEO4J_dbms_usage__report_enabled: "false"
+    ports:
+      # Localhost only: Docker bypasses ufw/iptables rules.
+      - "127.0.0.1:${NEO4J_HTTP_PORT:-7474}:7474"
+      - "127.0.0.1:${NEO4J_BOLT_PORT:-7687}:7687"
+    volumes:
+      - neo4j-data:/data
+    mem_limit: 1g
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  n8n:
+    image: n8nio/n8n:2.42.7
+    restart: unless-stopped
+    # Wrapper creates credentials/workflows from .env, then starts n8n as usual.
+    entrypoint: ["tini", "--", "sh", "/scripts/bootstrap.sh"]
+    depends_on:
+      db:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+    ports:
+      # Bound to localhost on purpose: Docker bypasses ufw/iptables rules.
+      # Change to "5678:5678" only on a trusted network.
+      - "127.0.0.1:${N8N_PORT:-5679}:5678"
+    environment:
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+      GENERIC_TIMEZONE: ${GENERIC_TIMEZONE:-UTC}
+      TZ: ${GENERIC_TIMEZONE:-UTC}
+      N8N_RESTRICT_FILE_ACCESS_TO: /files
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_PERSONALIZATION_ENABLED: "false"
+      # Admin account (created on first start when both are set)
+      OWNER_EMAIL: ${OWNER_EMAIL:-}
+      OWNER_PASSWORD: ${OWNER_PASSWORD:-}
+      N8N_INSTANCE_OWNER_EMAIL: ${OWNER_EMAIL:-}
+      N8N_INSTANCE_OWNER_FIRST_NAME: ${OWNER_FIRST_NAME:-Demo}
+      N8N_INSTANCE_OWNER_LAST_NAME: ${OWNER_LAST_NAME:-RAG}
+      # Used by the bootstrap script to create credentials
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      # Used by the bootstrap script to create the Neo4j credential
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD}
+      # AI provider: openai | gemini (Gemini has a free tier)
+      AI_PROVIDER: ${AI_PROVIDER:-openai}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_CHAT_MODEL: ${GEMINI_CHAT_MODEL:-gemini-flash-latest}
+      GEMINI_EMBED_MODEL: ${GEMINI_EMBED_MODEL:-gemini-embedding-001}
+    volumes:
+      - n8n-data:/home/node/.n8n
+      - ./manuales:/files/manuales:ro
+      - ./workflows:/workflows:ro
+      - ./scripts:/scripts:ro
+    mem_limit: 800m
+
+volumes:
+  db-data:
+  n8n-data:
+  neo4j-data:
