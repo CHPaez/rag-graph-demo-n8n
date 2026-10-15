@@ -147,7 +147,7 @@ docker compose down -v             # apagar y BORRAR todo (flujos, vectores, gra
 
 ```
 .
-├── docker-compose.yml          # db (pgvector) + neo4j + n8n, proyecto ragraph-demo
+├── docker-compose.yml          # db (PostgreSQL + extensión pgvector: vectores) + neo4j (base de grafos) + n8n, proyecto ragraph-demo
 ├── setup.sh / setup_web.py     # configuración (.env) heredada, con NEO4J_PASSWORD
 ├── .env.example
 ├── scripts/
@@ -159,11 +159,12 @@ docker compose down -v             # apagar y BORRAR todo (flujos, vectores, gra
 ├── workflows/
 │   ├── 01-ingesta.json         # vectorizar (original)
 │   ├── 02-chat-agente.json     # RAG vectorial (original + webhook)
-│   ├── 03-extraccion-grafo.json
-│   ├── 04-chat-grafo.json
-│   ├── 05-chat-hibrido.json
-│   └── 06-comparador.json
+│   ├── 03-extraccion-grafo.json  # el LLM extrae entidades y relaciones -> Neo4j (grafo)
+│   ├── 04-chat-grafo.json      # GraphRAG: responde recorriendo el grafo
+│   ├── 05-chat-hibrido.json    # híbrido: vectores (punto de entrada) + grafo (conexiones)
+│   └── 06-comparador.json      # vectores vs grafo vs híbrido, lado a lado
 └── docs/
-    ├── explicacion-rag-y-grafos.md
-    └── resultados-pruebas.md
+    ├── arquitectura-vectores-y-grafos.md  # una página: arquitectura y cómo se conectan
+    ├── explicacion-rag-y-grafos.md        # explicación para principiantes
+    └── resultados-pruebas.md              # resultados medidos
 ```
