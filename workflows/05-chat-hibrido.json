@@ -1,0 +1,226 @@
+{
+  "id": "ragChatHibrido05",
+  "name": "05 - Chat con el agente (hibrido: vector + grafo)",
+  "nodes": [
+    {
+      "id": "d0000000-0000-4000-8000-000000000001",
+      "name": "Chat",
+      "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "options": {}
+      },
+      "webhookId": "cf7829a0-3fad-56ef-b24a-9d4847eac735"
+    },
+    {
+      "id": "d0000000-0000-4000-8000-000000000007",
+      "name": "Webhook (para scripts)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        140
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ask-hybrid",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "webhookId": "85180ec0-4d88-5494-874e-0e0782834163"
+    },
+    {
+      "id": "d0000000-0000-4000-8000-000000000002",
+      "name": "Agente",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        260,
+        0
+      ],
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.chatInput || $json.body.question }}",
+        "options": {
+          "systemMessage": "Eres un asistente tecnico que responde preguntas sobre manuales de interfaz de dispositivos medicos. Tienes DOS herramientas: (1) 'Buscar en manuales (PGVector)': busqueda semantica que devuelve fragmentos literales de los manuales; (2) 'Recorrer el grafo (Neo4j)': devuelve entidades y sus relaciones (1 y 2 saltos), incluso entre manuales distintos. Metodo: PRIMERO usa la busqueda semantica para ubicar el tema y obtener el texto literal; DESPUES identifica en esos fragmentos los nombres de entidades relevantes (dispositivo, sistema, puerto, codigo de error...) y consulta el grafo con ellos para seguir las relaciones y las dependencias. Combina ambas fuentes. Responde solo con lo que encuentres; si no esta, dilo claramente y no inventes.",
+          "returnIntermediateSteps": true
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "id": "d0000000-0000-4000-8000-000000000003",
+      "name": "Modelo de chat (OpenAI)",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        160,
+        260
+      ],
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-4o-mini"
+        },
+        "options": {}
+      },
+      "credentials": {
+        "openAiApi": {
+          "id": "ragOpenAiCred",
+          "name": "OpenAI RAG (auto)"
+        }
+      }
+    },
+    {
+      "id": "d0000000-0000-4000-8000-000000000004",
+      "name": "Buscar en manuales (PGVector)",
+      "type": "@n8n/n8n-nodes-langchain.vectorStorePGVector",
+      "typeVersion": 1.3,
+      "position": [
+        420,
+        260
+      ],
+      "parameters": {
+        "mode": "retrieve-as-tool",
+        "toolDescription": "Busca informacion en los manuales tecnicos de interfaces de dispositivos medicos por similitud semantica: tramas HL7, puertos, ACK, codigos de error y solucion de problemas.",
+        "tableName": "manuales",
+        "topK": 4,
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "ragPostgresCred",
+          "name": "Postgres RAG (auto)"
+        }
+      }
+    },
+    {
+      "id": "d0000000-0000-4000-8000-000000000005",
+      "name": "Embeddings (OpenAI)",
+      "type": "@n8n/n8n-nodes-langchain.embeddingsOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        440,
+        480
+      ],
+      "parameters": {
+        "model": "text-embedding-3-small",
+        "options": {}
+      },
+      "credentials": {
+        "openAiApi": {
+          "id": "ragOpenAiCred",
+          "name": "OpenAI RAG (auto)"
+        }
+      }
+    },
+    {
+      "id": "d0000000-0000-4000-8000-000000000006",
+      "name": "Recorrer el grafo (Neo4j)",
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.2,
+      "position": [
+        640,
+        260
+      ],
+      "parameters": {
+        "descriptionType": "manual",
+        "toolDescription": "Consulta el grafo de conocimiento (Neo4j) construido a partir de los manuales. Recibe un termino (nombre de una entidad: dispositivo, sistema, mensaje, segmento, campo, puerto, codigo de error, etc.) y devuelve las entidades que coinciden con su descripcion, sus relaciones directas (1 salto) y las relaciones de sus vecinos (2 saltos). Usala para preguntas sobre como se relacionan o dependen las cosas.",
+        "method": "POST",
+        "url": "http://neo4j:7474/db/neo4j/tx/commit",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ statements: [{ statement: \"MATCH (e:Entity) WHERE toLower(e.name) CONTAINS toLower($term) OR toLower(e.key) CONTAINS toLower($term) OR toLower(coalesce(e.description,'')) CONTAINS toLower($term) WITH e ORDER BY size(e.name) LIMIT 3 OPTIONAL MATCH (e)-[r1]-(n1:Entity) WITH e, collect(DISTINCT startNode(r1).name + ' -[' + type(r1) + ']-> ' + endNode(r1).name + coalesce(' (' + r1.evidence + ')','')) AS hop1, collect(DISTINCT n1) AS ns UNWIND CASE WHEN size(ns)=0 THEN [null] ELSE ns END AS n OPTIONAL MATCH (n)-[r2]-(n2:Entity) WHERE n2 <> e AND NOT n2 IN ns WITH e, hop1, collect(DISTINCT startNode(r2).name + ' -[' + type(r2) + ']-> ' + endNode(r2).name) AS hop2 RETURN e.name AS entity, e.type AS type, e.description AS description, hop1[..30] AS relations_1_hop, hop2[..40] AS relations_2_hops\", parameters: { term: $fromAI('term', \"Nombre o palabra clave de la entidad a buscar, corto y en el idioma del manual (ej: 'E-214', 'ORU^R01', 'HIS', 'ACK', 'puerto').\", 'string') } }] }) }}",
+        "options": {}
+      },
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "ragNeo4jCred",
+          "name": "Neo4j HTTP (auto)"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Chat": {
+      "main": [
+        [
+          {
+            "node": "Agente",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook (para scripts)": {
+      "main": [
+        [
+          {
+            "node": "Agente",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Modelo de chat (OpenAI)": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Agente",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Buscar en manuales (PGVector)": {
+      "ai_tool": [
+        [
+          {
+            "node": "Agente",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Recorrer el grafo (Neo4j)": {
+      "ai_tool": [
+        [
+          {
+            "node": "Agente",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Embeddings (OpenAI)": {
+      "ai_embedding": [
+        [
+          {
+            "node": "Buscar en manuales (PGVector)",
+            "type": "ai_embedding",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false
+}

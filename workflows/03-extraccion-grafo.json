@@ -1,0 +1,530 @@
+{
+  "id": "ragExtraccionGrafo03",
+  "name": "03 - Extraccion del grafo (LLM -> Neo4j)",
+  "nodes": [
+    {
+      "id": "e0000000-0000-4000-8000-000000000001",
+      "name": "Ejecutar extraccion del grafo",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "e0000000-0000-4000-8000-000000000002",
+      "name": "Neo4j: crear restricciones",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://neo4j:7474/db/neo4j/tx/commit",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ statements: [{\"statement\": \"CREATE CONSTRAINT entity_key IF NOT EXISTS FOR (e:Entity) REQUIRE e.key IS UNIQUE\"}] }) }}",
+        "options": {}
+      },
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "ragNeo4jCred",
+          "name": "Neo4j HTTP (auto)"
+        }
+      }
+    },
+    {
+      "id": "e0000000-0000-4000-8000-000000000003",
+      "name": "Neo4j: borrar grafo anterior",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://neo4j:7474/db/neo4j/tx/commit",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ statements: [{\"statement\": \"MATCH (n) DETACH DELETE n\"}] }) }}",
+        "options": {}
+      },
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "ragNeo4jCred",
+          "name": "Neo4j HTTP (auto)"
+        }
+      }
+    },
+    {
+      "id": "e0000000-0000-4000-8000-000000000004",
+      "name": "Leer manuales de la carpeta",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        660,
+        0
+      ],
+      "parameters": {
+        "fileSelector": "/files/manuales/*",
+        "options": {}
+      }
+    },
+    {
+      "id": "e0000000-0000-4000-8000-000000000005",
+      "name": "Dividir en chunks por seccion",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        0
+      ],
+      "parameters": {
+        "jsCode": "// Split each manual into section-sized chunks (a section = text under a \"## \" heading).\nconst out = [];\nconst items = $input.all();\nfor (let i = 0; i < items.length; i++) {\n  const bin = items[i].binary?.data;\n  if (!bin) continue;\n  const name = bin.fileName || 'unknown';\n  if (!/\\.(md|txt)$/i.test(name)) { continue; } // PDF is only supported by the vector pipeline\n  const text = (await this.helpers.getBinaryDataBuffer(i, 'data')).toString('utf8');\n  const sections = text.split(/\\n(?=## )/).map((s) => s.trim()).filter((s) => s.length > 80);\n  sections.forEach((s, k) => out.push({ json: { source: name, chunkId: `${name}#${k}`, text: s } }));\n}\nreturn out;"
+      }
+    },
+    {
+      "id": "e0000000-0000-4000-8000-000000000006",
+      "name": "Por chunk",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        1100,
+        0
+      ],
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      }
+    },
+    {
+      "id": "e0000000-0000-4000-8000-000000000007",
+      "name": "Preparar prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1340,
+        120
+      ],
+      "parameters": {
+        "jsCode": "const chunk = $input.first().json;\nconst sd = $getWorkflowStaticData('global');\nsd.attempts = 0;\nconst prompt = `You extract a knowledge graph from a technical manual fragment (the manual is in Spanish).\nReturn ONLY JSON: {\"entities\":[{\"name\",\"type\",\"description\"}],\"relations\":[{\"source\",\"target\",\"type\",\"evidence\"}]}.\nRules:\n- Entity types: Device, System, Component, Message, Segment, Field, Parameter, Port, Protocol, ErrorCode, Procedure, Symptom, Event, Config.\n- Use short canonical names exactly as written in the text; reuse the same name for the same thing (e.g. always \"ACME M-100\", \"HIS\", \"ACK\", \"MLLP\", \"puerto 6661\" -> entity \"Puerto 6661\").\n- description: one concise sentence in Spanish with the concrete facts (values, formats, byte codes, timings, example frames if short).\n- Relation types (UPPER_SNAKE_CASE), prefer: SENDS, SENDS_TO, RECEIVES_FROM, CONNECTS_TO, LISTENS_ON, USES, CONTAINS, HAS_FIELD, HAS_PARAMETER, CONFIGURED_BY, RAISES, CAUSED_BY, RESOLVED_BY, DEPENDS_ON, RESPONDS_WITH, REQUIRES, AFFECTS, PART_OF, MANIFESTS_AS.\n- evidence: a very short quote or paraphrase (max 15 words) from the fragment.\n- Only facts stated in the fragment. No duplicates.\n\nFragment (${chunk.source}):\n${chunk.text}`;\nconst body = { contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0, responseMimeType: 'application/json' } };\nreturn [{ json: { ...chunk, body } }];"
+      }
+    },
+    {
+      "id": "e0000000-0000-4000-8000-000000000008",
+      "name": "Gemini: extraer entidades y relaciones",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1580,
+        120
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/__GEMINI_CHAT_MODEL__:generateContent",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googlePalmApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {
+          "timeout": 120000,
+          "response": {
+            "response": {
+              "neverError": true,
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "credentials": {
+        "googlePalmApi": {
+          "id": "ragGeminiCred",
+          "name": "Gemini RAG (auto)"
+        }
+      }
+    },
+    {
+      "id": "e0000000-0000-4000-8000-000000000009",
+      "name": "Reintentar?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1820,
+        120
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.statusCode }}",
+              "rightValue": 429,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "c2",
+              "leftValue": "={{ $json.statusCode }}",
+              "rightValue": 500,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "e0000000-0000-4000-8000-000000000010",
+      "name": "Backoff (cuenta intentos)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1820,
+        360
+      ],
+      "parameters": {
+        "jsCode": "const sd = $getWorkflowStaticData('global');\nsd.attempts = (sd.attempts || 0) + 1;\nconst code = $input.first().json.statusCode;\nif (sd.attempts > 6) throw new Error(`Gemini kept failing (last HTTP ${code}) after 6 retries. Free-tier quota may be exhausted; wait and re-run.`);\nreturn [{ json: { ...$('Preparar prompt').first().json, attempt: sd.attempts, lastStatus: code } }];"
+      }
+    },
+    {
+      "id": "e0000000-0000-4000-8000-000000000011",
+      "name": "Esperar 30 s (429 / error del servidor)",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1580,
+        360
+      ],
+      "parameters": {
+        "resume": "timeInterval",
+        "amount": 30,
+        "unit": "seconds"
+      }
+    },
+    {
+      "id": "e0000000-0000-4000-8000-000000000012",
+      "name": "Parsear a Cypher",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2060,
+        0
+      ],
+      "parameters": {
+        "jsCode": "const res = $input.first().json;\nconst chunk = $('Preparar prompt').first().json;\nif (res.statusCode !== 200) throw new Error(`Gemini HTTP ${res.statusCode}: ${JSON.stringify(res.body).slice(0, 300)}`);\nlet g;\ntry {\n  const txt = res.body.candidates[0].content.parts[0].text;\n  g = JSON.parse(txt.replace(/^```json\\s*|```\\s*$/g, ''));\n} catch (e) { throw new Error('Could not parse Gemini JSON: ' + e.message); }\nconst key = (s) => String(s).toLowerCase().replace(/\\s+/g, ' ').trim();\nconst ents = new Map();\nconst addEnt = (name, type, description) => {\n  if (!name) return;\n  const k = key(name);\n  const prev = ents.get(k);\n  if (!prev || (description || '').length > (prev.description || '').length) ents.set(k, { key: k, name: String(name).trim(), type: type || 'Unknown', description: description || '' });\n};\nfor (const e of g.entities || []) addEnt(e.name, e.type, e.description);\nconst rels = [];\nfor (const r of g.relations || []) {\n  if (!r.source || !r.target) continue;\n  const type = String(r.type || 'RELATED_TO').toUpperCase().replace(/[^A-Z0-9_]/g, '_').replace(/^_+|_+$/g, '').slice(0, 40) || 'RELATED_TO';\n  if (!ents.has(key(r.source))) addEnt(r.source, 'Unknown', '');\n  if (!ents.has(key(r.target))) addEnt(r.target, 'Unknown', '');\n  rels.push({ a: key(r.source), b: key(r.target), type, evidence: String(r.evidence || '').slice(0, 200) });\n}\nconst st = [{ statement: 'MERGE (c:Chunk {id:$id}) SET c.text=$text, c.source=$source', parameters: { id: chunk.chunkId, text: chunk.text, source: chunk.source } }];\nfor (const e of ents.values()) {\n  // keep the longest description seen so far (the same entity appears in several chunks/manuals)\n  st.push({ statement: \"MERGE (e:Entity {key:$key}) SET e.name=coalesce(e.name,$name), e.type=CASE WHEN e.type IS NULL OR e.type='Unknown' THEN $type ELSE e.type END, e.description=CASE WHEN e.description IS NULL OR size(e.description)<size($description) THEN $description ELSE e.description END\", parameters: e });\n  st.push({ statement: 'MATCH (c:Chunk {id:$id}),(e:Entity {key:$key}) MERGE (c)-[:MENTIONS]->(e)', parameters: { id: chunk.chunkId, key: e.key } });\n}\nfor (const r of rels) st.push({ statement: `MATCH (a:Entity {key:$a}),(b:Entity {key:$b}) MERGE (a)-[r:${r.type}]->(b) SET r.evidence=$evidence`, parameters: r });\nreturn [{ json: { chunkId: chunk.chunkId, entities: ents.size, relations: rels.length, statements: st } }];"
+      }
+    },
+    {
+      "id": "e0000000-0000-4000-8000-000000000013",
+      "name": "Neo4j: escribir chunk",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2300,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://neo4j:7474/db/neo4j/tx/commit",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ statements: $json.statements }) }}",
+        "options": {}
+      },
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "ragNeo4jCred",
+          "name": "Neo4j HTTP (auto)"
+        }
+      }
+    },
+    {
+      "id": "e0000000-0000-4000-8000-000000000014",
+      "name": "Verificar escritura",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2540,
+        0
+      ],
+      "parameters": {
+        "jsCode": "const r = $input.first().json;\nconst p = $('Parsear a Cypher').first().json;\nif (r.errors && r.errors.length) throw new Error('Neo4j: ' + JSON.stringify(r.errors).slice(0, 400));\nreturn [{ json: { chunkId: p.chunkId, entities: p.entities, relations: p.relations, status: 'ok' } }];"
+      }
+    },
+    {
+      "id": "e0000000-0000-4000-8000-000000000015",
+      "name": "Pausa 5 s (limite de tasa)",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        2780,
+        0
+      ],
+      "parameters": {
+        "resume": "timeInterval",
+        "amount": 5,
+        "unit": "seconds"
+      }
+    },
+    {
+      "id": "e0000000-0000-4000-8000-000000000016",
+      "name": "Neo4j: resumen del grafo",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1340,
+        -160
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://neo4j:7474/db/neo4j/tx/commit",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ statements: [{\"statement\": \"MATCH (n) UNWIND labels(n) AS l RETURN l, count(*) ORDER BY l\"}, {\"statement\": \"MATCH ()-[r]->() RETURN type(r), count(*) ORDER BY type(r)\"}] }) }}",
+        "options": {}
+      },
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "ragNeo4jCred",
+          "name": "Neo4j HTTP (auto)"
+        }
+      }
+    },
+    {
+      "id": "e0000000-0000-4000-8000-000000000017",
+      "name": "Formatear resumen",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1580,
+        -160
+      ],
+      "parameters": {
+        "jsCode": "const r = $input.first().json;\nif (r.errors && r.errors.length) throw new Error('Neo4j: ' + JSON.stringify(r.errors).slice(0, 400));\nconst rows = (i) => r.results[i].data.map((d) => d.row);\nreturn [{ json: {\n  nodesByLabel: Object.fromEntries(rows(0)),\n  relationshipsByType: Object.fromEntries(rows(1)),\n  sampleCypher: \"MATCH (a:Entity)-[r]->(b:Entity) RETURN a.name, type(r), b.name LIMIT 25\",\n  hint: 'Open http://localhost:7474 (user neo4j) and run the sample Cypher, or: MATCH p=()-[]->() RETURN p LIMIT 100',\n} }];"
+      }
+    }
+  ],
+  "connections": {
+    "Ejecutar extraccion del grafo": {
+      "main": [
+        [
+          {
+            "node": "Neo4j: crear restricciones",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Neo4j: crear restricciones": {
+      "main": [
+        [
+          {
+            "node": "Neo4j: borrar grafo anterior",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Neo4j: borrar grafo anterior": {
+      "main": [
+        [
+          {
+            "node": "Leer manuales de la carpeta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leer manuales de la carpeta": {
+      "main": [
+        [
+          {
+            "node": "Dividir en chunks por seccion",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dividir en chunks por seccion": {
+      "main": [
+        [
+          {
+            "node": "Por chunk",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Por chunk": {
+      "main": [
+        [
+          {
+            "node": "Neo4j: resumen del grafo",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Preparar prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar prompt": {
+      "main": [
+        [
+          {
+            "node": "Gemini: extraer entidades y relaciones",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini: extraer entidades y relaciones": {
+      "main": [
+        [
+          {
+            "node": "Reintentar?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reintentar?": {
+      "main": [
+        [
+          {
+            "node": "Backoff (cuenta intentos)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Parsear a Cypher",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Backoff (cuenta intentos)": {
+      "main": [
+        [
+          {
+            "node": "Esperar 30 s (429 / error del servidor)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Esperar 30 s (429 / error del servidor)": {
+      "main": [
+        [
+          {
+            "node": "Gemini: extraer entidades y relaciones",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parsear a Cypher": {
+      "main": [
+        [
+          {
+            "node": "Neo4j: escribir chunk",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Neo4j: escribir chunk": {
+      "main": [
+        [
+          {
+            "node": "Verificar escritura",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verificar escritura": {
+      "main": [
+        [
+          {
+            "node": "Pausa 5 s (limite de tasa)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pausa 5 s (limite de tasa)": {
+      "main": [
+        [
+          {
+            "node": "Por chunk",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Neo4j: resumen del grafo": {
+      "main": [
+        [
+          {
+            "node": "Formatear resumen",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false
+}

@@ -1,0 +1,217 @@
+{
+  "id": "ragComparador06",
+  "name": "06 - Comparador lado a lado (vector vs grafo vs hibrido)",
+  "nodes": [
+    {
+      "id": "f0000000-0000-4000-8000-000000000001",
+      "name": "Chat",
+      "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "options": {}
+      },
+      "webhookId": "e9da53d4-2809-50e6-9aab-88b0951ddb86"
+    },
+    {
+      "id": "f0000000-0000-4000-8000-000000000007",
+      "name": "Webhook (para scripts)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        140
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "compare",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "webhookId": "215d109d-dbf9-5eae-be0a-917ad1f4f9ce"
+    },
+    {
+      "id": "f0000000-0000-4000-8000-000000000002",
+      "name": "Preparar pregunta",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        0
+      ],
+      "parameters": {
+        "jsCode": "return [{ json: { question: $json.chatInput || $json.body.question } }];"
+      }
+    },
+    {
+      "id": "f0000000-0000-4000-8000-000000000003",
+      "name": "Vector",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        500,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:5678/webhook/ask-vector",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ question: $('Preparar pregunta').first().json.question }) }}",
+        "options": {
+          "timeout": 240000,
+          "response": {
+            "response": {
+              "neverError": true,
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "f0000000-0000-4000-8000-000000000004",
+      "name": "Grafo",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        740,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:5678/webhook/ask-graph",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ question: $('Preparar pregunta').first().json.question }) }}",
+        "options": {
+          "timeout": 240000,
+          "response": {
+            "response": {
+              "neverError": true,
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "f0000000-0000-4000-8000-000000000005",
+      "name": "Hibrido",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        980,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:5678/webhook/ask-hybrid",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ question: $('Preparar pregunta').first().json.question }) }}",
+        "options": {
+          "timeout": 240000,
+          "response": {
+            "response": {
+              "neverError": true,
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "f0000000-0000-4000-8000-000000000006",
+      "name": "Armar comparacion",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1220,
+        0
+      ],
+      "parameters": {
+        "jsCode": "const fmtSteps = (steps) => (steps || []).map((s, i) => {\n  const tool = s.action?.tool || '?';\n  const input = JSON.stringify(s.action?.toolInput ?? {});\n  let obs = typeof s.observation === 'string' ? s.observation : JSON.stringify(s.observation);\n  obs = (obs || '').replace(/\\s+/g, ' ');\n  return `  ${i + 1}. ${tool}(${input}) -> ${obs.slice(0, 500)}${obs.length > 500 ? '...' : ''}`;\n}).join('\\n') || '  (sin llamadas a herramientas)';\nconst part = (title, nodeName) => {\n  const r = $(nodeName).first().json;\n  const body = r.body || {};\n  const answer = body.output || (r.statusCode >= 400 ? `ERROR ${r.statusCode}: ${JSON.stringify(body).slice(0, 300)}` : JSON.stringify(body).slice(0, 300));\n  return `## ${title}\\n${answer}\\n\\nRecuperacion:\\n${fmtSteps(body.intermediateSteps)}`;\n};\nconst q = $('Preparar pregunta').first().json.question;\nreturn [{ json: { question: q, output: `# Pregunta: ${q}\\n\\n` + [part('RAG vectorial', 'Vector'), part('GraphRAG', 'Grafo'), part('Hibrido', 'Hibrido')].join('\\n\\n') } }];"
+      }
+    }
+  ],
+  "connections": {
+    "Chat": {
+      "main": [
+        [
+          {
+            "node": "Preparar pregunta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook (para scripts)": {
+      "main": [
+        [
+          {
+            "node": "Preparar pregunta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar pregunta": {
+      "main": [
+        [
+          {
+            "node": "Vector",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Vector": {
+      "main": [
+        [
+          {
+            "node": "Grafo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Grafo": {
+      "main": [
+        [
+          {
+            "node": "Hibrido",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Hibrido": {
+      "main": [
+        [
+          {
+            "node": "Armar comparacion",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false
+}
